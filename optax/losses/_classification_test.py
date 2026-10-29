@@ -581,24 +581,31 @@ class HingeTest(parameterized.TestCase):
 
   @parameterized.parameters(False, True)
   def test_multi_class_offset_compatibility(self, use_jit):
+    def legacy_loss(scores, labels):
+      one_hot_labels = jax.nn.one_hot(labels, scores.shape[-1])
+      return jnp.max(scores + 1.0 - one_hot_labels, axis=-1) - (
+          _classification._dot_last_dim(scores, one_hot_labels)
+      )
+
     loss = _classification.multiclass_hinge_loss
     if use_jit:
       loss = jax.jit(loss)
+      legacy_loss = jax.jit(legacy_loss)
     largest = jnp.finfo(jnp.float32).max
     np.testing.assert_array_equal(
         loss(jnp.array([largest, -largest]), jnp.array(0)), 0.0
     )
-    # Preserve the legacy nonfinite results, including masked-dot NaNs.
-    for scores, expected in [
-        ([-np.inf, 0.0], np.inf),
-        ([0.0, -np.inf], np.nan),
-        ([np.inf, 0.0], np.nan),
-        ([np.nan, 0.0], np.nan),
+    # Nonfinite results depend on JIT simplification; compare the old path.
+    for scores in [
+        [-np.inf, 0.0],
+        [0.0, -np.inf],
+        [np.inf, 0.0],
+        [np.nan, 0.0],
     ]:
+      scores = jnp.asarray(scores, dtype=jnp.float32)
+      label = jnp.array(0)
       np.testing.assert_allclose(
-          loss(jnp.asarray(scores, dtype=jnp.float32), jnp.array(0)),
-          expected,
-          equal_nan=True,
+          loss(scores, label), legacy_loss(scores, label), equal_nan=True
       )
     # Out-of-range labels keep the existing all-zero one-hot behavior.
     for label in [-1, 3]:
